@@ -2,9 +2,11 @@ import Head from 'next/head';
 import FaceTracker from '../components/FaceTracker';
 import Navigation from '../components/Navigation';
 import { useEffect, useState } from 'react';
+import { getAllVideos, deleteVideo as deleteDbVideo } from '../utils/indexedDb';
 
 export default function Home() {
   const [showSaved, setShowSaved] = useState(false);
+  const [refreshSaved, setRefreshSaved] = useState(0);
 
   const handleSavedVideosClick = () => {
     setShowSaved(true);
@@ -14,6 +16,9 @@ export default function Home() {
     }, 100);
   };
 
+  // Called after a recording is saved
+  const handleRecordingSaved = () => setRefreshSaved((r) => r + 1);
+
   return (
     <>
       <Head>
@@ -21,75 +26,53 @@ export default function Home() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
       <Navigation onSavedVideosClick={handleSavedVideosClick} />
-      <main style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1.5rem 0 0 0' }}>
-        <FaceTracker />
-        {showSaved && <SavedVideo />}
+      <main className="min-h-screen flex flex-col items-center justify-center bg-gray-100 pt-6 px-2 sm:px-0">
+        <div className="w-full max-w-2xl flex flex-col items-center">
+          <FaceTracker onRecordingSaved={handleRecordingSaved} />
+          {showSaved && <SavedVideo refresh={refreshSaved} />}
+        </div>
       </main>
     </>
   );
 }
 
-const SavedVideo = () => {
+const SavedVideo = ({ refresh }) => {
   const [hasMounted, setHasMounted] = useState(false);
   const [videos, setVideos] = useState([]);
 
   useEffect(() => {
     setHasMounted(true);
-    if (typeof window !== 'undefined') {
-      try {
-        const arr = JSON.parse(localStorage.getItem('recordedVideos')) || [];
-        setVideos(arr.reverse()); // show most recent first
-      } catch {
-        setVideos([]);
-      }
-    }
   }, []);
 
-  const handleDelete = (idxToDelete) => {
-    const arr = [...videos];
-    arr.splice(idxToDelete, 1);
-    setVideos(arr);
-    // Save back to localStorage (reverse again to keep order)
-    localStorage.setItem('recordedVideos', JSON.stringify([...arr].reverse()));
+  useEffect(() => {
+    getAllVideos().then(setVideos);
+  }, [refresh]);
+
+  const handleDelete = async (id) => {
+    await deleteDbVideo(id);
+    setVideos(videos.filter(v => v.id !== id));
   };
 
   if (!hasMounted || !videos.length) return null;
 
   return (
-    <div id="saved-video-section" className="face-card" style={{ marginTop: 32, maxWidth: 700 }}>
-      <h2 style={{ color: '#6366f1', fontWeight: 700, fontSize: '1.4rem', marginBottom: 16 }}>Saved Videos:</h2>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div id="saved-video-section" className="w-full max-w-xl bg-white rounded-lg shadow-md mt-8 p-4 sm:p-8">
+      <h2 className="text-indigo-600 font-bold text-lg sm:text-xl mb-4">Saved Videos:</h2>
+      <div className="flex flex-col gap-6">
         {videos.map((vid, idx) => (
-          <div key={vid.date + idx} style={{ marginBottom: 8, position: 'relative' }}>
+          <div key={vid.id} className="relative mb-2">
             <video 
               controls 
-              width="480" 
-              src={vid.data} 
-              className="rounded shadow-lg w-full" 
-              style={{ background: '#e0e7ef', borderRadius: 16, width: '100%', maxWidth: 480 }}
+              src={URL.createObjectURL(vid.blob)} 
+              className="rounded-lg shadow w-full bg-slate-200 max-w-full"
+              style={{ maxWidth: 480 }}
             />
-            <div style={{ fontSize: '0.95em', color: '#64748b', marginTop: 4 }}>
+            <div className="text-slate-500 text-sm mt-2">
               Saved: {new Date(vid.date).toLocaleString()}
             </div>
             <button
-              onClick={() => handleDelete(idx)}
-              style={{
-                position: 'absolute',
-                top: 8,
-                right: 8,
-                background: '#ef4444',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 6,
-                padding: '0.4em 1em',
-                fontWeight: 600,
-                cursor: 'pointer',
-                boxShadow: '0 2px 8px rgba(239,68,68,0.08)',
-                fontSize: '0.95em',
-                transition: 'background 0.2s',
-              }}
-              onMouseOver={e => e.currentTarget.style.background = '#b91c1c'}
-              onMouseOut={e => e.currentTarget.style.background = '#ef4444'}
+              onClick={() => handleDelete(vid.id)}
+              className="absolute top-2 right-2 bg-red-500 hover:bg-red-700 text-white rounded px-3 py-1 font-semibold text-sm shadow transition-colors"
             >
               Delete
             </button>

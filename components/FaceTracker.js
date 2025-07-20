@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as faceapi from 'face-api.js';
+import { saveVideo } from '../utils/indexedDb';
 
-const FaceTracker = () => {
+const FaceTracker = ({ onRecordingSaved }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const recordingCanvasRef = useRef(null);
   const [recording, setRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const recordedChunks = useRef([]);
@@ -58,14 +60,23 @@ const FaceTracker = () => {
     const handleVideoPlay = () => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
+      const recordingCanvas = recordingCanvasRef.current;
       const displaySize = { width: video.width, height: video.height };
       faceapi.matchDimensions(canvas, displaySize);
       intervalId = setInterval(async () => {
         const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions());
         const resizedDetections = faceapi.resizeResults(detections, displaySize);
+        // Draw on visible overlay
         canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
         faceapi.draw.drawDetections(canvas, resizedDetections);
         setFaceDetected(resizedDetections.length > 0);
+        // Draw on hidden recording canvas
+        if (recordingCanvas) {
+          const ctx = recordingCanvas.getContext('2d');
+          ctx.clearRect(0, 0, recordingCanvas.width, recordingCanvas.height);
+          ctx.drawImage(video, 0, 0, recordingCanvas.width, recordingCanvas.height);
+          faceapi.draw.drawDetections(recordingCanvas, resizedDetections);
+        }
       }, 200);
     };
     if (!loading && hasMounted && videoRef.current) {
@@ -86,7 +97,15 @@ const FaceTracker = () => {
       setTimeout(() => setShowFaceTooltip(false), 2000);
       return;
     }
-    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    // Get video stream from canvas
+    const recordingCanvas = recordingCanvasRef.current;
+    const canvasStream = recordingCanvas.captureStream(30); // 30 fps for smoother video
+    // Get audio track from webcam stream
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      canvasStream.addTrack(audioTracks[0]);
+    }
+    const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm' });
     setMediaRecorder(recorder);
     recordedChunks.current = [];
     setStatus('Recording...');
@@ -95,25 +114,15 @@ const FaceTracker = () => {
       if (event.data.size > 0) recordedChunks.current.push(event.data);
     };
 
-    recorder.onstop = () => {
+    recorder.onstop = async () => {
       const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const reader = new FileReader();
-      reader.readAsDataURL(blob);
-      reader.onloadend = () => {
-        const base64data = reader.result;
-        // Store as array of videos, max 5
-        let videos = [];
-        try {
-          videos = JSON.parse(localStorage.getItem('recordedVideos')) || [];
-        } catch (e) { videos = []; }
-        if (videos.length >= 5) {
-          videos.shift(); // remove oldest
-        }
-        videos.push({ data: base64data, date: new Date().toISOString() });
-        localStorage.setItem('recordedVideos', JSON.stringify(videos));
+      try {
+        await saveVideo(blob);
         setStatus('Recording saved!');
-      };
+        if (onRecordingSaved) onRecordingSaved();
+      } catch (e) {
+        setStatus('Failed to save recording.');
+      }
       recordedChunks.current = [];
     };
 
@@ -152,67 +161,72 @@ const FaceTracker = () => {
   if (faceDetected === false) cardClass += ' no-face';
 
   return (
-    <section className="main-section">
-      <div className={cardClass} style={{ maxWidth: 700, margin: '40px auto', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-        <header style={{ width: '100%' }}>
-          <p className="instructions">
+    <section className="w-full flex flex-col items-center justify-center px-2">
+      <div
+        className={cardClass + " w-full max-w-xl flex flex-col items-center bg-white rounded-lg shadow-md p-4 sm:p-8 mt-6"}
+      >
+        {/* Hidden canvas for recording */}
+        <canvas ref={recordingCanvasRef} width={640} height={480} style={{ display: 'none' }} />
+        <header className="w-full mb-2">
+          <p className="instructions text-center text-base sm:text-lg text-slate-700 mb-2">
             Allow camera access. Position your face in the frame. Click <b>Start Recording</b> to record.<br />
-            <span style={{fontSize: '0.95em', color: '#94a3b8'}}>Your video is processed locally and never uploaded.</span>
+            <span className="text-sm text-slate-400">Your video is processed locally and never uploaded.</span>
           </p>
         </header>
         {cameraError && (
-          <div style={{ color: '#ef4444', fontWeight: 600, margin: '1.5em 0', fontSize: '1.1em', textAlign: 'center' }}>{cameraError}</div>
+          <div className="text-red-500 font-semibold my-6 text-center text-lg">{cameraError}</div>
         )}
         {loading ? (
-          <div className="loader" aria-label="Loading...">
+          <div className="loader flex justify-center items-center my-8" aria-label="Loading...">
             <span className="loader-dot" />
             <span className="loader-dot" />
             <span className="loader-dot" />
           </div>
         ) : (
-          <div style={{ position: 'relative', width: 640, height: 480, margin: '0 auto', background: '#e0e7ef', borderRadius: 16, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
+          <div className="relative w-full aspect-video bg-slate-200 rounded-lg overflow-hidden shadow max-w-2xl sm:max-w-xl" style={{ maxWidth: '100vw', minHeight: 240 }}>
             <video
               ref={videoRef}
               width="640"
               height="480"
               autoPlay
               muted
-              style={{ borderRadius: 16, width: '100%', height: '100%', display: 'block', background: '#e0e7ef' }}
+              className="w-full h-full object-cover rounded-lg bg-slate-200 block"
             />
             <canvas
               ref={canvasRef}
               width="640"
               height="480"
-              style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none', width: '100%', height: '100%' }}
+              className="absolute top-0 left-0 w-full h-full pointer-events-none"
             />
           </div>
         )}
-        <div className="status-message">{status}</div>
+        <div className="status-message text-center text-slate-600 mt-4">{status}</div>
         {!loading && !cameraError && (
           <div className={
-            faceDetected === null
+            (faceDetected === null
               ? 'face-feedback'
               : faceDetected
               ? 'face-feedback'
-              : 'face-feedback no-face'
+              : 'face-feedback no-face') +
+            ' flex items-center justify-center mt-2 mb-2 text-base sm:text-lg'
           }>
             {faceDetected === null ? (
               <>
-                <span className="face-icon" aria-label="searching">
+                <span className="face-icon mr-2" aria-label="searching">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#6366f1" strokeWidth="2"/><path d="M16 16L21 21" stroke="#6366f1" strokeWidth="2" strokeLinecap="round"/></svg>
                 </span>
                 Looking for a face...
               </>
             ) : faceDetected ? (
               <>
-                <span className="face-icon" aria-label="face detected">
+                <span className="face-icon mr-2" aria-label="face detected">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#10b981" strokeWidth="2"/><path d="M8 13l2.5 2.5L16 10" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </span>
                 Face Detected!
               </>
             ) : (
               <>
-                <span className="face-icon" aria-label="no face">
+                <span className="face-icon mr-2" aria-label="no face">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#ef4444" strokeWidth="2"/><path d="M9 9l6 6M15 9l-6 6" stroke="#ef4444" strokeWidth="2" strokeLinecap="round"/></svg>
                 </span>
                 No Face Detected
@@ -220,13 +234,12 @@ const FaceTracker = () => {
             )}
           </div>
         )}
-        <div style={{ marginTop: 32, display: 'flex', gap: 16, position: 'relative' }}>
+        <div className="mt-8 flex gap-4 w-full justify-center relative">
           {!recording ? (
             <button
               onClick={startRecording}
-              className="creative-btn"
+              className="creative-btn flex items-center gap-2 px-6 py-2 rounded-lg bg-green-400 hover:bg-green-500 text-white font-semibold shadow transition disabled:opacity-50 disabled:cursor-not-allowed relative"
               disabled={loading || !stream || !!cameraError || !faceDetected}
-              style={loading || !stream || !!cameraError || !faceDetected ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
               onMouseEnter={() => { if (!faceDetected) setShowFaceTooltip(true); }}
               onMouseLeave={() => setShowFaceTooltip(false)}
             >
@@ -234,18 +247,18 @@ const FaceTracker = () => {
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" fill="#fff" stroke="#34d399" strokeWidth="2"/><circle cx="10" cy="10" r="5" fill="#34d399"/></svg>
               </span>
               Start Recording
-              {rippleStyle && <span className="ripple" style={rippleStyle} />}
+              {rippleStyle && <span className="ripple absolute" style={rippleStyle} />}
             </button>
           ) : (
             <button
               onClick={stopRecording}
-              className="creative-btn recording"
+              className="creative-btn recording flex items-center gap-2 px-6 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white font-semibold shadow transition relative"
             >
               <span aria-label="stop icon">
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" fill="#fff" stroke="#ef4444" strokeWidth="2"/><rect x="7" y="7" width="6" height="6" rx="1" fill="#ef4444"/></svg>
               </span>
               Stop Recording
-              {rippleStyle && <span className="ripple" style={rippleStyle} />}
+              {rippleStyle && <span className="ripple absolute" style={rippleStyle} />}
             </button>
           )}
           {showFaceTooltip && !faceDetected && (
